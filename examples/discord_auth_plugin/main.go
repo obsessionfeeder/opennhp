@@ -36,7 +36,7 @@ var (
 
 var (
 	name    = "discord"
-	version = "0.1.0"
+	version = "0.2.0" // Added one-time knock tokens for invisible access
 
 	baseConfigWatch io.Closer
 	resConfigWatch  io.Closer
@@ -264,6 +264,93 @@ func validateNhpKey(nhpKey string) (discordId string, valid bool) {
 	return discordId, true
 }
 
+// validateAndConsumeInviteToken validates a one-time invitation token
+// Returns the Discord ID if valid, empty string otherwise
+// The token is marked as used after successful validation
+func validateAndConsumeInviteToken(token string, sourceIP string) (discordId string, valid bool) {
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	if db == nil {
+		log.Error("database not initialized")
+		return "", false
+	}
+
+	// Check token exists and is valid
+	var nhpKeyId string
+	var expiresAt string
+	var used bool
+
+	err := db.QueryRow(
+		"SELECT nhp_key_id, discord_id, expires_at, used FROM nhp_invite_tokens WHERE token = ?",
+		token,
+	).Scan(&nhpKeyId, &discordId, &expiresAt, &used)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			log.Info("Invite token not found: %s...", token[:min(8, len(token))])
+		} else {
+			log.Error("database query error: %v", err)
+		}
+		return "", false
+	}
+
+	// Check if already used
+	if used {
+		log.Info("Invite token already used: %s...", token[:min(8, len(token))])
+		return "", false
+	}
+
+	// Check if expired
+	expires, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		// Try alternate format
+		expires, err = time.Parse("2006-01-02 15:04:05", expiresAt)
+	}
+	if err != nil {
+		log.Error("Failed to parse expires_at: %v", err)
+		return "", false
+	}
+
+	if time.Now().After(expires) {
+		log.Info("Invite token expired: %s...", token[:min(8, len(token))])
+		return "", false
+	}
+
+	// Check if the associated NHP key is still valid
+	var keyRevoked bool
+	err = db.QueryRow(
+		"SELECT revoked FROM nhp_keys WHERE id = ?",
+		nhpKeyId,
+	).Scan(&keyRevoked)
+
+	if err != nil || keyRevoked {
+		log.Info("Invite token's NHP key is revoked: %s...", token[:min(8, len(token))])
+		return "", false
+	}
+
+	// Mark token as used (one-time use)
+	_, err = db.Exec(
+		"UPDATE nhp_invite_tokens SET used = 1, used_at = ?, used_ip = ? WHERE token = ?",
+		time.Now().Format(time.RFC3339), sourceIP, token,
+	)
+	if err != nil {
+		log.Error("Failed to mark token as used: %v", err)
+		// Continue anyway - token was valid
+	}
+
+	log.Info("Invite token consumed: %s... from IP %s", token[:min(8, len(token))], sourceIP)
+	return discordId, true
+}
+
+// min returns the smaller of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func RequestOTP(req *common.NhpOTPRequest, helper *plugins.NhpServerPluginHelper) error {
 	return fmt.Errorf("OTP not implemented for discord auth")
 }
@@ -303,15 +390,23 @@ func AuthWithHttp(ctx *gin.Context, req *common.HttpKnockRequest, helper *plugin
 	corsMiddleware(ctx)
 
 	switch {
+	case strings.EqualFold(action, "knock"):
+		// One-time knock via invitation token (invisible access)
+		ackMsg, err = knockWithInviteToken(ctx, req, res, helper)
+
 	case strings.EqualFold(action, "valid"):
 		ackMsg, err = authWithNhpKey(ctx, req, res, helper)
 
 	case strings.EqualFold(action, "login"):
-		ackMsg, err = showLoginPage(ctx, req, res, helper)
+		// DEPRECATED: Login page removed for true invisibility
+		// Return 444 (nginx: close connection without response)
+		ctx.AbortWithStatus(444)
+		return nil, nil
 
 	default:
-		ackMsg = nil
-		err = fmt.Errorf("action invalid")
+		// Silent fail for invalid actions - don't reveal anything
+		ctx.AbortWithStatus(444)
+		return nil, nil
 	}
 	return
 }
@@ -336,80 +431,68 @@ func showLoginPage(ctx *gin.Context, req *common.HttpKnockRequest, res *common.R
 	return nil, nil
 }
 
-func authWithNhpKey(ctx *gin.Context, req *common.HttpKnockRequest, res *common.ResourceData, helper *plugins.HttpServerPluginHelper) (*common.ServerKnockAckMsg, error) {
-	nhpKey, _ := url.QueryUnescape(ctx.Query("nhp_key"))
-	if nhpKey == "" {
-		nhpKey, _ = url.QueryUnescape(ctx.Query("nhpKey"))
+// knockWithInviteToken handles one-time knock via invitation token
+// This is the primary method for invisible access - no login page needed
+func knockWithInviteToken(ctx *gin.Context, req *common.HttpKnockRequest, res *common.ResourceData, helper *plugins.HttpServerPluginHelper) (*common.ServerKnockAckMsg, error) {
+	// Get token from query parameter
+	token, _ := url.QueryUnescape(ctx.Query("t"))
+	if token == "" {
+		token, _ = url.QueryUnescape(ctx.Query("token"))
 	}
 
-	if nhpKey == "" {
-		log.Info("No NHP key provided")
-		ctx.JSON(http.StatusOK, gin.H{
-			"errCode": 400,
-			"errMsg":  "NHP key is required",
-		})
-		return nil, fmt.Errorf("NHP key is required")
+	if token == "" {
+		// Silent fail - don't reveal anything
+		log.Info("No invite token provided")
+		ctx.AbortWithStatus(444)
+		return nil, nil
 	}
 
-	discordId, valid := validateNhpKey(nhpKey)
+	// Get source IP for logging and potential IP-based access control
+	sourceIP := ctx.ClientIP()
+
+	// Validate and consume the token (one-time use)
+	discordId, valid := validateAndConsumeInviteToken(token, sourceIP)
 	if !valid {
-		log.Info("Invalid or revoked NHP key: %s", nhpKey)
-		ctx.JSON(http.StatusOK, gin.H{
-			"errCode": 401,
-			"errMsg":  "Invalid or revoked NHP key. Please get a new key from Discord using /nhp-access",
-		})
-		return nil, fmt.Errorf("invalid NHP key")
+		// Silent fail - don't reveal anything
+		ctx.AbortWithStatus(444)
+		return nil, nil
 	}
 
 	req.UserId = discordId
 
-	// Call AC to open access
+	// Call AC to open access (triggers iptables rule for this IP)
 	ackMsg, err := helper.AuthWithHttpCallbackFunc(req, res)
 	if ackMsg == nil || ackMsg.ErrCode != common.ErrSuccess.ErrorCode() {
-		log.Error("knock failed")
-		ackMsg = &common.ServerKnockAckMsg{}
-		ackMsg.ErrCode = common.ErrServerACOpsFailed.ErrorCode()
-		if err != nil {
-			ackMsg.ErrMsg = err.Error()
-		} else {
-			ackMsg.ErrMsg = "Failed to open access"
-		}
-		ctx.JSON(http.StatusOK, ackMsg)
-		return ackMsg, err
+		log.Error("knock failed for Discord user: %s", discordId)
+		// Silent fail
+		ctx.AbortWithStatus(444)
+		return nil, err
 	}
 
-	log.Info("knock succeeded for Discord user: %s", discordId)
-	ackMsg.ErrMsg = ""
+	log.Info("Knock succeeded for Discord user: %s from IP %s", discordId, sourceIP)
 
-	// Set redirect URL
-	if len(res.RedirectUrl) == 0 {
-		log.Error("RedirectUrl is not provided")
-	} else {
-		ackMsg.RedirectUrl = res.RedirectUrl
-	}
-
-	// Set cookies
+	// Set cookies (still needed for WebSocket auth within the session)
 	singleHost := len(ackMsg.ACTokens) == 1
-	for resName, token := range ackMsg.ACTokens {
+	for resName, acToken := range ackMsg.ACTokens {
 		if singleHost {
 			ctx.SetCookie(
 				"nhp-token",
-				url.QueryEscape(token),
+				url.QueryEscape(acToken),
 				int(res.OpenTime),
 				"/",
 				res.CookieDomain,
 				true, // Secure - required for HTTPS
-				true,
+				true, // HttpOnly
 			)
 		} else {
 			domain := strings.Split(ackMsg.ResourceHost[resName], ":")[0]
 			ctx.SetCookie(
 				"nhp-token/"+resName,
-				url.QueryEscape(token),
+				url.QueryEscape(acToken),
 				int(res.OpenTime),
 				"/",
 				domain,
-				true, // Secure - required for HTTPS
+				true,
 				true,
 			)
 		}
@@ -422,12 +505,28 @@ func authWithNhpKey(ctx *gin.Context, req *common.HttpKnockRequest, res *common.
 		int(res.OpenTime),
 		"/",
 		res.CookieDomain,
-		true, // Secure - required for HTTPS
+		true,  // Secure
 		false, // Allow JavaScript access
 	)
 
-	ctx.JSON(http.StatusOK, ackMsg)
+	// Redirect to the app (now accessible because IP is whitelisted by AC)
+	if len(res.RedirectUrl) > 0 {
+		ctx.Redirect(http.StatusFound, res.RedirectUrl)
+	} else {
+		log.Error("RedirectUrl is not provided")
+		ctx.Redirect(http.StatusFound, "/")
+	}
+
 	return ackMsg, nil
+}
+
+// authWithNhpKey is DEPRECATED - kept for backwards compatibility but returns 444
+func authWithNhpKey(ctx *gin.Context, req *common.HttpKnockRequest, res *common.ResourceData, helper *plugins.HttpServerPluginHelper) (*common.ServerKnockAckMsg, error) {
+	// DEPRECATED: Direct NHP key auth is disabled for true invisibility
+	// Users should use invitation tokens via /knock endpoint
+	log.Info("Direct NHP key auth attempted - deprecated, returning 444")
+	ctx.AbortWithStatus(444)
+	return nil, nil
 }
 
 func AuthWithNHP(req *common.NhpAuthRequest, helper *plugins.NhpServerPluginHelper) (ackMsg *common.ServerKnockAckMsg, err error) {
