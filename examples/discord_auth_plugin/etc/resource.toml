@@ -1,0 +1,22 @@
+# Cottonwood resource configuration for Discord Auth plugin
+
+["cottonwood"]
+SkipAuth = false
+OpenTime = 300
+RedirectUrl = "http://localhost:8080/"
+RedirectWithParams = false
+CookieDomain = "localhost"
+
+# Cottonwood server resource
+["cottonwood".Resources."cottonwood-server"]
+ACId = "cottonwood-ac"
+Hostname = "localhost"
+Addr.Ip = "172.28.0.20"
+Addr.Port = 3001
+Addr.Protocol = "tcp"
+PortSuffix = false
+
+# Extra information for login page
+["cottonwood".ExInfo]
+Title = "Cottonwood Access"
+DiscordServer = "https://discord.gg/obsession"

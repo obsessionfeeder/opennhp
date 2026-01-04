@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.title}} - NHP Access</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=Inter:wght@300;400;500;600&display=swap');
+
+        :root {
+            --gold-primary: #D4AF37;
+            --gold-light: #E5C76B;
+            --gold-dark: #B8860B;
+            --dark-bg: #0D0B09;
+            --dark-surface: #1A1714;
+            --dark-border: #2A2520;
+            --warm-white: #FAF8F5;
+            --warm-gray: #A8A095;
+            --error-red: #E53935;
+            --success-green: #4CAF50;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, var(--dark-bg) 0%, #1a1510 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: var(--dark-surface);
+            border: 1px solid var(--dark-border);
+            border-radius: 16px;
+            padding: 40px;
+            max-width: 420px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .logo h1 {
+            font-family: 'Cinzel', serif;
+            font-size: 28px;
+            font-weight: 600;
+            color: var(--gold-primary);
+            letter-spacing: 2px;
+            margin-bottom: 8px;
+        }
+
+        .logo p {
+            color: var(--warm-gray);
+            font-size: 14px;
+        }
+
+        .form-group {
+            margin-bottom: 24px;
+        }
+
+        .form-group label {
+            display: block;
+            color: var(--warm-white);
+            font-weight: 500;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        .key-input-container {
+            position: relative;
+        }
+
+        .key-input {
+            width: 100%;
+            padding: 14px 16px;
+            background: var(--dark-bg);
+            border: 1px solid var(--dark-border);
+            border-radius: 8px;
+            color: var(--warm-white);
+            font-size: 16px;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .key-input:focus {
+            outline: none;
+            border-color: var(--gold-primary);
+            box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.1);
+        }
+
+        .key-input::placeholder {
+            color: var(--warm-gray);
+            letter-spacing: 1px;
+            text-transform: none;
+        }
+
+        .submit-btn {
+            width: 100%;
+            padding: 14px 24px;
+            background: linear-gradient(135deg, var(--gold-primary) 0%, var(--gold-dark) 100%);
+            border: none;
+            border-radius: 8px;
+            color: var(--dark-bg);
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .submit-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(212, 175, 55, 0.3);
+        }
+
+        .submit-btn:active {
+            transform: translateY(0);
+        }
+
+        .submit-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .error-message {
+            background: rgba(229, 57, 53, 0.1);
+            border: 1px solid var(--error-red);
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            color: var(--error-red);
+            font-size: 14px;
+            display: none;
+        }
+
+        .success-message {
+            background: rgba(76, 175, 80, 0.1);
+            border: 1px solid var(--success-green);
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            color: var(--success-green);
+            font-size: 14px;
+            display: none;
+        }
+
+        .help-text {
+            text-align: center;
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid var(--dark-border);
+        }
+
+        .help-text p {
+            color: var(--warm-gray);
+            font-size: 14px;
+            margin-bottom: 12px;
+        }
+
+        .discord-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: #5865F2;
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .discord-link:hover {
+            color: #7289DA;
+        }
+
+        .discord-icon {
+            width: 20px;
+            height: 20px;
+        }
+
+        .loading-spinner {
+            display: none;
+            width: 20px;
+            height: 20px;
+            border: 2px solid transparent;
+            border-top-color: var(--dark-bg);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .btn-content {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <h1>COTTONWOOD</h1>
+            <p>Zero Trust Network Access</p>
+        </div>
+
+        <div id="errorMessage" class="error-message"></div>
+        <div id="successMessage" class="success-message"></div>
+
+        <form id="nhpForm" onsubmit="return submitForm(event)">
+            <div class="form-group">
+                <label for="nhpKey">Enter your NHP Access Key</label>
+                <div class="key-input-container">
+                    <input
+                        type="text"
+                        id="nhpKey"
+                        class="key-input"
+                        placeholder="NHP-XXXX-XXXX-XXXX-XXXX"
+                        autocomplete="off"
+                        spellcheck="false"
+                        required
+                    >
+                </div>
+            </div>
+
+            <button type="submit" id="submitBtn" class="submit-btn">
+                <span class="btn-content">
+                    <span class="loading-spinner" id="spinner"></span>
+                    <span id="btnText">Access Cottonwood</span>
+                </span>
+            </button>
+        </form>
+
+        <div class="help-text">
+            <p>Don't have an access key?</p>
+            <a href="https://discord.gg/obsession" target="_blank" class="discord-link">
+                <svg class="discord-icon" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
+                </svg>
+                Join Discord & use /nhp-access
+            </a>
+        </div>
+    </div>
+
+    <script>
+        const nhpServer = "{{.nhpServer}}";
+        const aspId = "{{.aspId}}";
+        const resId = "{{.resId}}";
+
+        function showError(message) {
+            const errorEl = document.getElementById('errorMessage');
+            errorEl.textContent = message;
+            errorEl.style.display = 'block';
+            document.getElementById('successMessage').style.display = 'none';
+        }
+
+        function showSuccess(message) {
+            const successEl = document.getElementById('successMessage');
+            successEl.textContent = message;
+            successEl.style.display = 'block';
+            document.getElementById('errorMessage').style.display = 'none';
+        }
+
+        function setLoading(loading) {
+            const btn = document.getElementById('submitBtn');
+            const spinner = document.getElementById('spinner');
+            const btnText = document.getElementById('btnText');
+
+            btn.disabled = loading;
+            spinner.style.display = loading ? 'inline-block' : 'none';
+            btnText.textContent = loading ? 'Authenticating...' : 'Access Cottonwood';
+        }
+
+        async function submitForm(event) {
+            event.preventDefault();
+
+            const nhpKey = document.getElementById('nhpKey').value.trim().toUpperCase();
+
+            if (!nhpKey) {
+                showError('Please enter your NHP access key');
+                return false;
+            }
+
+            setLoading(true);
+            document.getElementById('errorMessage').style.display = 'none';
+            document.getElementById('successMessage').style.display = 'none';
+
+            try {
+                const url = `/plugins/${aspId}?resid=${resId}&action=valid&nhp_key=${encodeURIComponent(nhpKey)}`;
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (data.errCode === "0" || data.errCode === 0) {
+                    showSuccess('Access granted! Redirecting...');
+
+                    // Redirect to the protected resource
+                    setTimeout(() => {
+                        if (data.redirectUrl) {
+                            window.location.href = data.redirectUrl;
+                        } else {
+                            window.location.href = '/';
+                        }
+                    }, 1000);
+                } else {
+                    showError(data.errMsg || 'Authentication failed. Please check your key and try again.');
+                }
+            } catch (error) {
+                console.error('Auth error:', error);
+                showError('Connection error. Please try again.');
+            } finally {
+                setLoading(false);
+            }
+
+            return false;
+        }
+
+        // Format key input as user types
+        document.getElementById('nhpKey').addEventListener('input', function(e) {
+            let value = e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, '');
+            e.target.value = value;
+        });
+    </script>
+</body>
+</html>

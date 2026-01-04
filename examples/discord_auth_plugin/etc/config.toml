@@ -1,0 +1,4 @@
+# Discord Auth Plugin Configuration
+# Path to the SQLite database containing NHP keys
+# This database is shared with the Discord bot
+KeysDbPath = "/nhp-server/data/keys.db"
