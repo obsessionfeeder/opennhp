@@ -34,6 +34,7 @@ END_COLOUR=\033[0m
 
 # Plugins
 NHP_SERVER_PLUGINS = ./examples/server_plugin
+NHP_DISCORD_PLUGIN = ./examples/discord_auth_plugin
 
 # Android environment settings
 ANDROID_CC='${TOOLCHAIN}/bin/aarch64-linux-android21-clang'
@@ -97,6 +98,7 @@ init:
 	cd nhp && go mod tidy
 	cd endpoints && go mod tidy
 	cd examples/server_plugin && go mod tidy
+	cd examples/discord_auth_plugin && go mod tidy
 
 agentd:
 	@echo "$(COLOUR_BLUE)[OpenNHP] Building nhp-agent... $(END_COLOUR)"
@@ -198,6 +200,7 @@ endif
 plugins:
 	@echo "$(COLOUR_BLUE)[OpenNHP] Building plugins... $(END_COLOUR)"
 	@if test -d $(NHP_SERVER_PLUGINS); then $(MAKE) -C $(NHP_SERVER_PLUGINS); fi
+	@if test -d $(NHP_DISCORD_PLUGIN); then $(MAKE) -C $(NHP_DISCORD_PLUGIN); fi
 
 test:
 	@echo "[OpenNHP] Runing Tests for the Output Binaries ..."
