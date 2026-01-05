@@ -38,7 +38,7 @@ var (
 
 var (
 	name    = "discord"
-	version = "0.3.0" // True Invisibility: nginx auth_request + IP whitelist
+	version = "0.3.1" // Skip AC for subscription-based downloads (nginx auth_request only)
 
 	baseConfigWatch io.Closer
 	resConfigWatch  io.Closer
@@ -777,21 +777,35 @@ func knockWithSubscription(ctx *gin.Context, req *common.HttpKnockRequest, res *
 
 	req.UserId = deviceId
 
-	// Call AC to open access (triggers iptables rule for this IP)
-	ackMsg, err := helper.AuthWithHttpCallbackFunc(req, res)
-	if err != nil {
-		log.Error("AuthWithHttpCallbackFunc failed: %v", err)
-		ctx.AbortWithStatus(444)
-		return nil, err
+	// For downloads with RequiresSubscription, we skip the AC call
+	// (downloads use nginx auth_request + IP whitelist, not iptables)
+	// The subscription check above is sufficient authorization
+	var ackMsg *common.ServerKnockAckMsg
+	requiresSubscription := false
+	if res.ExInfo != nil {
+		if rs, ok := res.ExInfo["RequiresSubscription"].(bool); ok {
+			requiresSubscription = rs
+		}
 	}
 
-	if ackMsg == nil || ackMsg.ErrCode != common.ErrSuccess.ErrorCode() {
-		log.Error("knock failed for device: %s", deviceId)
-		ctx.AbortWithStatus(444)
-		return nil, err
+	if !requiresSubscription {
+		// Call AC to open access (triggers iptables rule for this IP)
+		var err error
+		ackMsg, err = helper.AuthWithHttpCallbackFunc(req, res)
+		if err != nil {
+			log.Error("AuthWithHttpCallbackFunc failed: %v", err)
+			ctx.AbortWithStatus(444)
+			return nil, err
+		}
+
+		if ackMsg == nil || ackMsg.ErrCode != common.ErrSuccess.ErrorCode() {
+			log.Error("knock failed for device: %s", deviceId)
+			ctx.AbortWithStatus(444)
+			return nil, err
+		}
 	}
 
-	log.Info("Download knock succeeded for device: %s from IP %s", deviceId, sourceIP)
+	log.Info("Download knock succeeded for device: %s from IP %s (skipAC=%v)", deviceId, sourceIP, requiresSubscription)
 
 	// Add IP to whitelist for nginx auth_request
 	// Use res.OpenTime as the whitelist duration (default 1 hour for downloads)
