@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 
 type config struct {
 	KeysDbPath string
+	BffApiUrl  string // BFF API URL for subscription validation
 }
 
 var (
@@ -493,6 +495,10 @@ func AuthWithHttp(ctx *gin.Context, req *common.HttpKnockRequest, helper *plugin
 		// One-time knock via invitation token (invisible access)
 		ackMsg, err = knockWithInviteToken(ctx, req, res, helper)
 
+	case strings.EqualFold(action, "download-knock"):
+		// Subscription-based knock for downloads (mobile app)
+		ackMsg, err = knockWithSubscription(ctx, req, res, helper)
+
 	case strings.EqualFold(action, "check-ip"):
 		// IP whitelist check for nginx auth_request
 		// Returns 200 if IP is whitelisted, 403 if not
@@ -723,6 +729,138 @@ func corsMiddleware(ctx *gin.Context) {
 	}
 
 	ctx.Next()
+}
+
+// knockWithSubscription handles subscription-based knock for mobile app downloads
+// This validates the user's premium subscription via BFF/RevenueCat before whitelisting
+func knockWithSubscription(ctx *gin.Context, req *common.HttpKnockRequest, res *common.ResourceData, helper *plugins.HttpServerPluginHelper) (*common.ServerKnockAckMsg, error) {
+	// Get device ID from header (sent by Flutter app)
+	deviceId := ctx.GetHeader("X-Device-ID")
+	if deviceId == "" {
+		deviceId = ctx.Query("device_id")
+	}
+
+	if deviceId == "" {
+		log.Info("No device ID provided for download knock")
+		ctx.AbortWithStatus(444)
+		return nil, nil
+	}
+
+	// Get API key from header (validates it's a legitimate app request)
+	apiKey := ctx.GetHeader("X-API-Key")
+	if apiKey == "" {
+		log.Info("No API key provided for download knock")
+		ctx.AbortWithStatus(444)
+		return nil, nil
+	}
+
+	// Get source IP
+	sourceIP := ctx.ClientIP()
+
+	// Validate subscription via BFF
+	isPremium, err := validateSubscriptionViaBFF(deviceId, apiKey)
+	if err != nil {
+		log.Error("Subscription validation error: %v", err)
+		ctx.AbortWithStatus(444)
+		return nil, nil
+	}
+
+	if !isPremium {
+		log.Info("Non-premium user attempted download knock: device=%s", deviceId)
+		// Return 403 for non-premium - app can show upgrade prompt
+		ctx.JSON(http.StatusForbidden, gin.H{
+			"error":   "subscription_required",
+			"message": "Premium subscription required for offline downloads",
+		})
+		return nil, nil
+	}
+
+	req.UserId = deviceId
+
+	// Call AC to open access (triggers iptables rule for this IP)
+	ackMsg, err := helper.AuthWithHttpCallbackFunc(req, res)
+	if err != nil {
+		log.Error("AuthWithHttpCallbackFunc failed: %v", err)
+		ctx.AbortWithStatus(444)
+		return nil, err
+	}
+
+	if ackMsg == nil || ackMsg.ErrCode != common.ErrSuccess.ErrorCode() {
+		log.Error("knock failed for device: %s", deviceId)
+		ctx.AbortWithStatus(444)
+		return nil, err
+	}
+
+	log.Info("Download knock succeeded for device: %s from IP %s", deviceId, sourceIP)
+
+	// Add IP to whitelist for nginx auth_request
+	// Use res.OpenTime as the whitelist duration (default 1 hour for downloads)
+	if err := addToIpWhitelist(sourceIP, deviceId, int(res.OpenTime)); err != nil {
+		log.Error("Failed to add IP to whitelist: %v", err)
+		// Continue anyway - AC already opened access
+	}
+
+	// Return success response (no redirect needed - mobile app handles download)
+	ctx.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"open_time":  res.OpenTime,
+		"message":    "IP whitelisted for downloads",
+		"expires_in": res.OpenTime,
+	})
+
+	return ackMsg, nil
+}
+
+// validateSubscriptionViaBFF calls the BFF API to check if device has premium subscription
+func validateSubscriptionViaBFF(deviceId string, apiKey string) (bool, error) {
+	if baseConf == nil || baseConf.BffApiUrl == "" {
+		return false, fmt.Errorf("BFF API URL not configured")
+	}
+
+	// Build request to BFF subscription validation endpoint
+	reqUrl := fmt.Sprintf("%s/api/v1/subscription/validate", baseConf.BffApiUrl)
+
+	httpReq, err := http.NewRequest("POST", reqUrl, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("X-Device-ID", deviceId)
+	httpReq.Header.Set("X-API-Key", apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return false, fmt.Errorf("BFF request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("BFF returned status %d", resp.StatusCode)
+	}
+
+	// Parse response
+	var result struct {
+		IsPremium    bool   `json:"is_premium"`
+		Entitlements any    `json:"entitlements"`
+		ExpiresAt    string `json:"expires_at"`
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Simple JSON parsing without encoding/json import (already using gin)
+	// Use gin's built-in JSON binding
+	if err := json.Unmarshal(body, &result); err != nil {
+		return false, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	log.Info("Subscription check for device %s: premium=%v, expires=%s", deviceId, result.IsPremium, result.ExpiresAt)
+
+	return result.IsPremium, nil
 }
 
 func main() {
