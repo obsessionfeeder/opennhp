@@ -1,0 +1,27 @@
+name: nhp_agent
+description: OpenNHP Agent SDK for Flutter. Provides Network-resource Hiding Protocol (NHP) functionality for Zero Trust network access.
+version: 0.1.0
+homepage: https://github.com/OpenNHP/opennhp
+repository: https://github.com/OpenNHP/opennhp/tree/main/sdk/flutter/nhp_agent
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: io.opennhp.nhp_agent
+        pluginClass: NhpAgentPlugin
+      ios:
+        pluginClass: NhpAgentPlugin
