@@ -156,6 +156,7 @@ func initKeysDb() error {
 		CREATE TABLE IF NOT EXISTS nhp_ip_whitelist (
 			ip TEXT PRIMARY KEY,
 			discord_id TEXT NOT NULL,
+			discord_username TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			expires_at DATETIME NOT NULL
 		)
@@ -288,26 +289,29 @@ func validateNhpKey(nhpKey string) (discordId string, valid bool) {
 }
 
 // validateAndConsumeInviteToken validates a one-time invitation token
-// Returns the Discord ID if valid, empty string otherwise
+// Returns the Discord ID and username if valid, empty strings otherwise
 // The token is marked as used after successful validation
-func validateAndConsumeInviteToken(token string, sourceIP string) (discordId string, valid bool) {
+func validateAndConsumeInviteToken(token string, sourceIP string) (discordId string, discordUsername string, valid bool) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
 	if db == nil {
 		log.Error("database not initialized")
-		return "", false
+		return "", "", false
 	}
 
-	// Check token exists and is valid
+	// Check token exists and is valid (join with nhp_keys to get username)
 	var nhpKeyId string
 	var expiresAt string
 	var used bool
 
-	err := db.QueryRow(
-		"SELECT nhp_key_id, discord_id, expires_at, used FROM nhp_invite_tokens WHERE token = ?",
+	err := db.QueryRow(`
+		SELECT t.nhp_key_id, t.discord_id, t.expires_at, t.used, k.discord_username
+		FROM nhp_invite_tokens t
+		JOIN nhp_keys k ON t.nhp_key_id = k.id
+		WHERE t.token = ?`,
 		token,
-	).Scan(&nhpKeyId, &discordId, &expiresAt, &used)
+	).Scan(&nhpKeyId, &discordId, &expiresAt, &used, &discordUsername)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -315,13 +319,13 @@ func validateAndConsumeInviteToken(token string, sourceIP string) (discordId str
 		} else {
 			log.Error("database query error: %v", err)
 		}
-		return "", false
+		return "", "", false
 	}
 
 	// Check if already used
 	if used {
 		log.Info("Invite token already used: %s...", token[:min(8, len(token))])
-		return "", false
+		return "", "", false
 	}
 
 	// Check if expired
@@ -332,12 +336,12 @@ func validateAndConsumeInviteToken(token string, sourceIP string) (discordId str
 	}
 	if err != nil {
 		log.Error("Failed to parse expires_at: %v", err)
-		return "", false
+		return "", "", false
 	}
 
 	if time.Now().After(expires) {
 		log.Info("Invite token expired: %s...", token[:min(8, len(token))])
-		return "", false
+		return "", "", false
 	}
 
 	// Check if the associated NHP key is still valid
@@ -349,7 +353,7 @@ func validateAndConsumeInviteToken(token string, sourceIP string) (discordId str
 
 	if err != nil || keyRevoked {
 		log.Info("Invite token's NHP key is revoked: %s...", token[:min(8, len(token))])
-		return "", false
+		return "", "", false
 	}
 
 	// Mark token as used (one-time use)
@@ -362,8 +366,8 @@ func validateAndConsumeInviteToken(token string, sourceIP string) (discordId str
 		// Continue anyway - token was valid
 	}
 
-	log.Info("Invite token consumed: %s... from IP %s", token[:min(8, len(token))], sourceIP)
-	return discordId, true
+	log.Info("Invite token consumed: %s... from IP %s (user: %s)", token[:min(8, len(token))], sourceIP, discordUsername)
+	return discordId, discordUsername, true
 }
 
 // min returns the smaller of two integers
@@ -376,7 +380,7 @@ func min(a, b int) int {
 
 // addToIpWhitelist adds an IP to the whitelist with expiry
 // This is called after a successful knock to allow the IP through nginx auth_request
-func addToIpWhitelist(ip string, discordId string, openTimeSeconds int) error {
+func addToIpWhitelist(ip string, discordId string, discordUsername string, openTimeSeconds int) error {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
@@ -388,49 +392,55 @@ func addToIpWhitelist(ip string, discordId string, openTimeSeconds int) error {
 
 	// Upsert - replace if IP already exists (user re-knocking)
 	_, err := db.Exec(`
-		INSERT INTO nhp_ip_whitelist (ip, discord_id, created_at, expires_at)
-		VALUES (?, ?, datetime('now'), ?)
+		INSERT INTO nhp_ip_whitelist (ip, discord_id, discord_username, created_at, expires_at)
+		VALUES (?, ?, ?, datetime('now'), ?)
 		ON CONFLICT(ip) DO UPDATE SET
 			discord_id = excluded.discord_id,
+			discord_username = excluded.discord_username,
 			created_at = datetime('now'),
 			expires_at = excluded.expires_at
-	`, ip, discordId, expiresAt.Format(time.RFC3339))
+	`, ip, discordId, discordUsername, expiresAt.Format(time.RFC3339))
 
 	if err != nil {
 		log.Error("Failed to add IP to whitelist: %v", err)
 		return err
 	}
 
-	log.Info("IP %s whitelisted for Discord user %s until %s", ip, discordId, expiresAt.Format(time.RFC3339))
+	log.Info("IP %s whitelisted for Discord user %s (%s) until %s", ip, discordUsername, discordId, expiresAt.Format(time.RFC3339))
 	return nil
 }
 
 // isIpWhitelisted checks if an IP is in the whitelist and not expired
-func isIpWhitelisted(ip string) (discordId string, whitelisted bool) {
+func isIpWhitelisted(ip string) (discordId string, discordUsername string, whitelisted bool) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
 
 	if db == nil {
 		log.Error("database not initialized")
-		return "", false
+		return "", "", false
 	}
 
 	// Clean up expired entries first (periodically)
 	_, _ = db.Exec(`DELETE FROM nhp_ip_whitelist WHERE expires_at < datetime('now')`)
 
 	var expiresAtStr string
+	var usernameNull sql.NullString
 	err := db.QueryRow(
-		"SELECT discord_id, expires_at FROM nhp_ip_whitelist WHERE ip = ?",
+		"SELECT discord_id, discord_username, expires_at FROM nhp_ip_whitelist WHERE ip = ?",
 		ip,
-	).Scan(&discordId, &expiresAtStr)
+	).Scan(&discordId, &usernameNull, &expiresAtStr)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// Not whitelisted - this is expected for most requests
-			return "", false
+			return "", "", false
 		}
 		log.Error("database query error checking IP whitelist: %v", err)
-		return "", false
+		return "", "", false
+	}
+
+	if usernameNull.Valid {
+		discordUsername = usernameNull.String
 	}
 
 	// Parse expiry time
@@ -441,15 +451,15 @@ func isIpWhitelisted(ip string) (discordId string, whitelisted bool) {
 	}
 	if err != nil {
 		log.Error("Failed to parse expires_at for IP %s: %v", ip, err)
-		return "", false
+		return "", "", false
 	}
 
 	if time.Now().After(expiresAt) {
 		// Expired
-		return "", false
+		return "", "", false
 	}
 
-	return discordId, true
+	return discordId, discordUsername, true
 }
 
 func RequestOTP(req *common.NhpOTPRequest, helper *plugins.NhpServerPluginHelper) error {
@@ -542,7 +552,7 @@ func showLoginPage(ctx *gin.Context, req *common.HttpKnockRequest, res *common.R
 }
 
 // checkIpWhitelist handles nginx auth_request for IP-based access control
-// Returns 200 if IP is whitelisted (with X-NHP-Discord-ID header)
+// Returns 200 if IP is whitelisted (with X-NHP-Discord-ID and X-NHP-Discord-Username headers)
 // Returns 403 if not whitelisted (nginx should convert this to 444)
 func checkIpWhitelist(ctx *gin.Context) (*common.ServerKnockAckMsg, error) {
 	// Get client IP - try X-Real-IP first, then X-Forwarded-For, then RemoteAddr
@@ -559,10 +569,13 @@ func checkIpWhitelist(ctx *gin.Context) (*common.ServerKnockAckMsg, error) {
 		ip = ctx.ClientIP()
 	}
 
-	discordId, whitelisted := isIpWhitelisted(ip)
+	discordId, discordUsername, whitelisted := isIpWhitelisted(ip)
 	if whitelisted {
-		// Set Discord ID header for upstream use
+		// Set Discord ID and username headers for upstream use
 		ctx.Header("X-NHP-Discord-ID", discordId)
+		if discordUsername != "" {
+			ctx.Header("X-NHP-Discord-Username", discordUsername)
+		}
 		ctx.Status(http.StatusOK)
 		return nil, nil
 	}
@@ -592,7 +605,7 @@ func knockWithInviteToken(ctx *gin.Context, req *common.HttpKnockRequest, res *c
 	sourceIP := ctx.ClientIP()
 
 	// Validate and consume the token (one-time use)
-	discordId, valid := validateAndConsumeInviteToken(token, sourceIP)
+	discordId, discordUsername, valid := validateAndConsumeInviteToken(token, sourceIP)
 	if !valid {
 		// Silent fail - don't reveal anything
 		ctx.AbortWithStatus(444)
@@ -604,17 +617,17 @@ func knockWithInviteToken(ctx *gin.Context, req *common.HttpKnockRequest, res *c
 	// Call AC to open access (triggers iptables rule for this IP)
 	ackMsg, err := helper.AuthWithHttpCallbackFunc(req, res)
 	if ackMsg == nil || ackMsg.ErrCode != common.ErrSuccess.ErrorCode() {
-		log.Error("knock failed for Discord user: %s", discordId)
+		log.Error("knock failed for Discord user: %s (%s)", discordUsername, discordId)
 		// Silent fail
 		ctx.AbortWithStatus(444)
 		return nil, err
 	}
 
-	log.Info("Knock succeeded for Discord user: %s from IP %s", discordId, sourceIP)
+	log.Info("Knock succeeded for Discord user: %s (%s) from IP %s", discordUsername, discordId, sourceIP)
 
 	// Add IP to whitelist for nginx auth_request (true invisibility)
 	// Use res.OpenTime as the whitelist duration
-	if err := addToIpWhitelist(sourceIP, discordId, int(res.OpenTime)); err != nil {
+	if err := addToIpWhitelist(sourceIP, discordId, discordUsername, int(res.OpenTime)); err != nil {
 		log.Error("Failed to add IP to whitelist: %v", err)
 		// Continue anyway - AC already opened access
 	}
@@ -809,7 +822,7 @@ func knockWithSubscription(ctx *gin.Context, req *common.HttpKnockRequest, res *
 
 	// Add IP to whitelist for nginx auth_request
 	// Use res.OpenTime as the whitelist duration (default 1 hour for downloads)
-	if err := addToIpWhitelist(sourceIP, deviceId, int(res.OpenTime)); err != nil {
+	if err := addToIpWhitelist(sourceIP, deviceId, "", int(res.OpenTime)); err != nil {
 		log.Error("Failed to add IP to whitelist: %v", err)
 		// Continue anyway - AC already opened access
 	}
