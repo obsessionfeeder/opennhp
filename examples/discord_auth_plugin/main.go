@@ -838,8 +838,9 @@ func knockWithSubscription(ctx *gin.Context, req *common.HttpKnockRequest, res *
 	return ackMsg, nil
 }
 
-// validateSubscriptionViaBFF calls the BFF API to check if device has premium subscription
-// Includes retry logic for transient 502 errors from Cloudflare
+// validateSubscriptionViaBFF calls the obsession-api service to check if device has premium subscription
+// Uses local Docker network service (http://172.28.0.60:3003) to avoid Cloudflare Go HTTP client issues
+// Retry logic retained for defensive purposes
 func validateSubscriptionViaBFF(deviceId string, apiKey string) (bool, error) {
 	if baseConf == nil || baseConf.BffApiUrl == "" {
 		return false, fmt.Errorf("BFF API URL not configured")
