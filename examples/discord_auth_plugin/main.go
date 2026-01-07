@@ -851,7 +851,8 @@ func validateSubscriptionViaBFF(deviceId string, apiKey string) (bool, error) {
 	// Retry up to 3 times for transient errors (502, 503, 504)
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		httpReq, err := http.NewRequest("POST", reqUrl, nil)
+		// Send empty JSON body - Cloudflare Workers can have issues with nil body POST requests
+		httpReq, err := http.NewRequest("POST", reqUrl, strings.NewReader("{}"))
 		if err != nil {
 			return false, fmt.Errorf("failed to create request: %w", err)
 		}
@@ -859,6 +860,7 @@ func validateSubscriptionViaBFF(deviceId string, apiKey string) (bool, error) {
 		httpReq.Header.Set("X-Device-ID", deviceId)
 		httpReq.Header.Set("X-API-Key", apiKey)
 		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Content-Length", "2")
 		// Set User-Agent to avoid Cloudflare blocking Go's default client
 		httpReq.Header.Set("User-Agent", "ObsessionNHP/1.0")
 		httpReq.Header.Set("Accept", "application/json")
