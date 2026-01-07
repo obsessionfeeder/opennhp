@@ -839,6 +839,7 @@ func knockWithSubscription(ctx *gin.Context, req *common.HttpKnockRequest, res *
 }
 
 // validateSubscriptionViaBFF calls the BFF API to check if device has premium subscription
+// Includes retry logic for transient 502 errors from Cloudflare
 func validateSubscriptionViaBFF(deviceId string, apiKey string) (bool, error) {
 	if baseConf == nil || baseConf.BffApiUrl == "" {
 		return false, fmt.Errorf("BFF API URL not configured")
@@ -847,47 +848,76 @@ func validateSubscriptionViaBFF(deviceId string, apiKey string) (bool, error) {
 	// Build request to BFF subscription validation endpoint
 	reqUrl := fmt.Sprintf("%s/api/v1/subscription/validate", baseConf.BffApiUrl)
 
-	httpReq, err := http.NewRequest("POST", reqUrl, nil)
-	if err != nil {
-		return false, fmt.Errorf("failed to create request: %w", err)
+	// Retry up to 3 times for transient errors (502, 503, 504)
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		httpReq, err := http.NewRequest("POST", reqUrl, nil)
+		if err != nil {
+			return false, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		httpReq.Header.Set("X-Device-ID", deviceId)
+		httpReq.Header.Set("X-API-Key", apiKey)
+		httpReq.Header.Set("Content-Type", "application/json")
+		// Set User-Agent to avoid Cloudflare blocking Go's default client
+		httpReq.Header.Set("User-Agent", "ObsessionNHP/1.0")
+		httpReq.Header.Set("Accept", "application/json")
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("BFF request failed: %w", err)
+			if attempt < 3 {
+				log.Info("BFF request error (attempt %d/3): %v, retrying...", attempt, err)
+				time.Sleep(time.Duration(attempt*200) * time.Millisecond)
+				continue
+			}
+			return false, lastErr
+		}
+
+		// Check for transient errors that warrant a retry
+		if resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("BFF returned status %d", resp.StatusCode)
+			if attempt < 3 {
+				log.Info("BFF transient error %d (attempt %d/3), retrying...", resp.StatusCode, attempt)
+				time.Sleep(time.Duration(attempt*200) * time.Millisecond)
+				continue
+			}
+			return false, lastErr
+		}
+
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return false, fmt.Errorf("BFF returned status %d", resp.StatusCode)
+		}
+
+		// Parse response
+		var result struct {
+			IsPremium    bool   `json:"is_premium"`
+			Entitlements any    `json:"entitlements"`
+			ExpiresAt    string `json:"expires_at"`
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return false, fmt.Errorf("failed to read response: %w", err)
+		}
+
+		// Simple JSON parsing without encoding/json import (already using gin)
+		// Use gin's built-in JSON binding
+		if err := json.Unmarshal(body, &result); err != nil {
+			return false, fmt.Errorf("failed to parse response: %w", err)
+		}
+
+		log.Info("Subscription check for device %s: premium=%v, expires=%s", deviceId, result.IsPremium, result.ExpiresAt)
+
+		return result.IsPremium, nil
 	}
 
-	httpReq.Header.Set("X-Device-ID", deviceId)
-	httpReq.Header.Set("X-API-Key", apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return false, fmt.Errorf("BFF request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("BFF returned status %d", resp.StatusCode)
-	}
-
-	// Parse response
-	var result struct {
-		IsPremium    bool   `json:"is_premium"`
-		Entitlements any    `json:"entitlements"`
-		ExpiresAt    string `json:"expires_at"`
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Simple JSON parsing without encoding/json import (already using gin)
-	// Use gin's built-in JSON binding
-	if err := json.Unmarshal(body, &result); err != nil {
-		return false, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	log.Info("Subscription check for device %s: premium=%v, expires=%s", deviceId, result.IsPremium, result.ExpiresAt)
-
-	return result.IsPremium, nil
+	// All retries exhausted
+	return false, lastErr
 }
 
 func main() {
