@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Commit Message Rules
+
+**Do NOT include the following in commit messages:**
+- `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
+- `Co-Authored-By: Claude ...` or any co-author attribution
+
+Just write a normal commit message describing the changes.
+
 ## Project Overview
 
 OpenNHP is a Go-based Zero Trust security toolkit implementing two core protocols:
