@@ -745,7 +745,8 @@ func corsMiddleware(ctx *gin.Context) {
 }
 
 // knockWithSubscription handles subscription-based knock for mobile app downloads
-// This validates the user's premium subscription via BFF/RevenueCat before whitelisting
+// This validates the user's premium subscription via tracker-api (which checks the
+// device's verified App Store / Play Store receipt cached in SQLite) before whitelisting
 func knockWithSubscription(ctx *gin.Context, req *common.HttpKnockRequest, res *common.ResourceData, helper *plugins.HttpServerPluginHelper) (*common.ServerKnockAckMsg, error) {
 	// Get device ID from header (sent by Flutter app)
 	deviceId := ctx.GetHeader("X-Device-ID")
